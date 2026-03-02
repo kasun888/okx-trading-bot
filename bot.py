@@ -1,9 +1,9 @@
 """
-🤖 OKX Smart Trading Bot — BTC + GOLD
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🤖 OKX Smart Trading Bot — BTC + ETH + SOL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Capital: $10,000 SGD
 Target:  $20-30 SGD/day
-Markets: BTC/USDT + XAU/USDT (Gold)
+Markets: BTC/USDT + ETH/USDT + SOL/USDT
 Mode:    Demo (flag="1") → change to "0" for live
 """
 
@@ -31,22 +31,26 @@ log = logging.getLogger(__name__)
 
 # ─── Assets to Trade ─────────────────────────────────────────────────────────
 ASSETS = {
-    "BTC":  {"instId": "BTC-USDT",  "label": "Bitcoin",  "emoji": "₿"},
-    "GOLD": {"instId": "XAUT-USDT", "label": "Gold",     "emoji": "🥇"},
+    "BTC":  {"instId": "BTC-USDT",  "label": "Bitcoin",  "emoji": "₿",  "setting": "trade_btc"},
+    "ETH":  {"instId": "ETH-USDT",  "label": "Ethereum", "emoji": "Ξ",  "setting": "trade_eth"},
+    "SOL":  {"instId": "SOL-USDT",  "label": "Solana",   "emoji": "◎",  "setting": "trade_sol"},
+    "GOLD": {"instId": "XAUT-USDT", "label": "Gold",     "emoji": "🥇", "setting": "trade_gold"},
 }
 
 # ─── Load Settings ────────────────────────────────────────────────────────────
 def load_settings():
     default = {
-        "position_size_pct": 0.30,
-        "stop_loss_pct":     0.005,
-        "take_profit_pct":   0.010,
-        "max_trades_day":    3,
+        "position_size_pct": 0.25,
+        "stop_loss_pct":     0.003,
+        "take_profit_pct":   0.006,
+        "max_trades_day":    5,
         "max_daily_loss":    50.0,
         "signal_threshold":  4,
         "demo_mode":         True,
         "trade_btc":         True,
-        "trade_gold":        True
+        "trade_eth":         True,
+        "trade_sol":         True,
+        "trade_gold":        False
     }
     try:
         with open("settings.json") as f:
@@ -62,7 +66,7 @@ def trade_asset(asset, inst_id, settings, trader, signals, alert, today, trade_l
     log.info(f"\n{'='*40}")
     log.info(f"🔍 Analyzing {asset}...")
 
-    # Check open position
+    # Check existing open position for this asset
     position = trader.get_position(inst_id)
     if position:
         pnl = trader.check_pnl(position)
@@ -82,19 +86,13 @@ def trade_asset(asset, inst_id, settings, trader, signals, alert, today, trade_l
                 json.dump(today, f, indent=2)
         return
 
-    # Run signal analysis
+    # Run 5-layer signal analysis
     score, direction, details = signals.analyze(asset=asset)
     log.info(f"{asset} Score: {score}/5 | Direction: {direction}")
-    log.info(details)
 
     threshold = settings["signal_threshold"]
     if score < threshold or direction == "NONE":
-        log.info(f"⏸️ {asset}: Score {score} < {threshold}. Skipping.")
-        alert.send(
-            f"⏸️ {ASSETS[asset]['emoji']} {asset}: No trade\n"
-            f"Score: {score}/5 | {direction}\n"
-            f"{details}"
-        )
+        log.info(f"⏸️  {asset}: Score {score} < {threshold}. Skipping.")
         return
 
     # Place trade
@@ -119,21 +117,21 @@ def trade_asset(asset, inst_id, settings, trader, signals, alert, today, trade_l
         alert.send(
             f"{arrow} {ASSETS[asset]['emoji']} {asset} Trade #{today['trades']} OPENED!\n"
             f"Direction: {direction}\n"
-            f"Entry:  ${price:,.2f}\n"
-            f"Target: ${tp_price:,.2f} (+{settings['take_profit_pct']*100:.1f}%)\n"
-            f"Stop:   ${sl_price:,.2f} (-{settings['stop_loss_pct']*100:.1f}%)\n"
+            f"Entry:  ${price:,.4f}\n"
+            f"Target: ${tp_price:,.4f} (+{settings['take_profit_pct']*100:.1f}%)\n"
+            f"Stop:   ${sl_price:,.4f} (-{settings['stop_loss_pct']*100:.1f}%)\n"
             f"Size:   ${trade_amt:,.0f} USDT\n"
             f"Score:  {score}/5\n"
-            f"{'[DEMO]' if settings['demo_mode'] else '[LIVE 💰]'}"
+            f"Details:\n{details}\n"
+            f"{'[DEMO 🎮]' if settings['demo_mode'] else '[LIVE 💰]'}"
         )
-        log.info(f"✅ {asset} trade placed!")
+        log.info(f"✅ {asset} trade placed successfully!")
     else:
         log.error(f"❌ {asset} trade failed: {result['error']}")
-        alert.send(f"❌ {asset} trade failed: {result['error']}")
 
 # ─── Main Bot ─────────────────────────────────────────────────────────────────
 def run_bot():
-    log.info("🤖 OKX Bot starting — BTC + GOLD")
+    log.info("🤖 OKX Bot starting — BTC + ETH + SOL")
 
     settings = load_settings()
     sg_tz    = pytz.timezone("Asia/Singapore")
@@ -141,7 +139,7 @@ def run_bot():
 
     log.info(f"📅 {now.strftime('%Y-%m-%d %H:%M SGT')} | Demo: {settings['demo_mode']}")
 
-    # Trading hours 6am-6pm SGT
+    # Trading hours 6am-6pm SGT only
     if now.hour < 6 or now.hour >= 18:
         log.info("⏰ Outside trading hours (6am-6pm SGT). Skipping.")
         return
@@ -157,10 +155,10 @@ def run_bot():
         with open(trade_log_file) as f:
             today = json.load(f)
     except FileNotFoundError:
-        today = {"trades": 0, "daily_pnl": 0.0, "stopped": False}
+        today = {"trades": 0, "daily_pnl": 0.0, "stopped": False, "date": now.strftime('%Y-%m-%d')}
 
-    # Daily loss limit
-    if today["stopped"]:
+    # Daily loss limit check
+    if today.get("stopped"):
         log.info("🛑 Daily loss limit hit. Stopped for today.")
         return
 
@@ -168,23 +166,51 @@ def run_bot():
         today["stopped"] = True
         with open(trade_log_file, "w") as f:
             json.dump(today, f, indent=2)
-        alert.send(f"🛑 Daily loss limit ${settings['max_daily_loss']} SGD hit! Stopped.")
+        alert.send(
+            f"🛑 Daily loss limit ${settings['max_daily_loss']} SGD hit!\n"
+            f"Bot stopped for today. Resume tomorrow! 💪"
+        )
         return
 
-    # Max trades
+    # Max trades check
     if today["trades"] >= settings["max_trades_day"]:
-        log.info(f"✅ Max {settings['max_trades_day']} trades done today.")
+        log.info(f"✅ Max {settings['max_trades_day']} trades reached today.")
         return
 
-    # ── Analyze and Trade BTC ─────────────────────────────────────────────
-    if settings.get("trade_btc", True):
-        trade_asset("BTC", "BTC-USDT", settings, trader, signal, alert, today, trade_log_file)
+    # ── Scan ALL Assets ───────────────────────────────────────────────────────
+    for asset, info in ASSETS.items():
+        # Check if this asset is enabled in settings
+        if not settings.get(info["setting"], False):
+            log.info(f"⏭️  {asset} disabled in settings. Skipping.")
+            continue
 
-    # ── Analyze and Trade GOLD ────────────────────────────────────────────
-    if settings.get("trade_gold", True) and today["trades"] < settings["max_trades_day"]:
-        trade_asset("GOLD", "XAUT-USDT", settings, trader, signal, alert, today, trade_log_file)
+        # Check max trades
+        if today["trades"] >= settings["max_trades_day"]:
+            log.info(f"✅ Max trades reached. Stopping scan.")
+            break
 
-    log.info(f"\n✅ Bot cycle done | Trades today: {today['trades']} | PnL: ${today['daily_pnl']:.2f}")
+        trade_asset(
+            asset        = asset,
+            inst_id      = info["instId"],
+            settings     = settings,
+            trader       = trader,
+            signals      = signal,
+            alert        = alert,
+            today        = today,
+            trade_log_file = trade_log_file
+        )
+
+    # ── End of Cycle Summary ──────────────────────────────────────────────────
+    log.info(f"\n{'='*40}")
+    log.info(f"✅ Cycle done | Trades: {today['trades']}/{settings['max_trades_day']} | PnL: ${today['daily_pnl']:.2f} SGD")
+
+    # Send daily summary at 5:30pm SGT
+    if now.hour == 9 and now.minute >= 25 and now.minute <= 35:  # 5:25-5:35pm SGT
+        alert.send_daily_summary(
+            trades   = today["trades"],
+            pnl      = today["daily_pnl"],
+            win_rate = 0
+        )
 
 if __name__ == "__main__":
     run_bot()
