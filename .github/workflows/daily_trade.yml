@@ -2,7 +2,12 @@ name: 🤖 IG Forex + Gold Bot
 
 on:
   schedule:
-    - cron: '*/5 0-14 * * 1-5'
+    # Every 5 mins 24hrs Mon-Fri (UTC)
+    # Monday 5am SGT = Sunday 21:00 UTC
+    # Friday 5am SGT = Thursday 21:00 UTC
+    - cron: '*/5 * * * 0-4'   # Sun-Thu UTC = Mon-Fri SGT
+    - cron: '*/5 21-23 * * 0' # Sunday 21-23 UTC = Monday 5am+ SGT
+    - cron: '*/5 0-23 * * 1-4' # Mon-Thu UTC = Tue-Fri SGT
   workflow_dispatch:
 
 jobs:
