@@ -1,20 +1,19 @@
 """
-💱 Deriv Trade Executor
-Uses WebSocket API
-Supports: EUR/USD, GBP/USD, Gold (XAU/USD)
+Deriv Trade Executor
+Uses WebSocket API with API token
 """
 
 import os
 import json
-import asyncio
-import websockets
 import logging
+import websocket
+import threading
+import time
 
 log = logging.getLogger(__name__)
 
-DERIV_WS = "wss://ws.derivws.com/websockets/v3?app_id=1089"
+DERIV_WS_URL = "wss://ws.derivws.com/websockets/v3?app_id=1089"
 
-# Symbol map
 SYMBOLS = {
     "EURUSD": "frxEURUSD",
     "GBPUSD": "frxGBPUSD",
@@ -26,161 +25,198 @@ class DerivTrader:
         self.token   = os.environ.get("DERIV_TOKEN", "")
         self.account = None
         self.balance = 0
-        log.info(f"Deriv Trader | Token: {self.token[:6]}****")
+        self.authorized = False
+        log.info(f"Deriv Trader | Token: {self.token[:8]}****  len={len(self.token)}")
 
-    def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+    def _send_request(self, request):
+        import websocket as ws_lib
+        result = {}
+        event  = threading.Event()
 
-    # ── Login / Authorize ─────────────────────────────────────────────────────
-    async def _authorize(self, ws):
-        await ws.send(json.dumps({"authorize": self.token}))
-        resp = json.loads(await ws.recv())
-        if "error" in resp:
-            log.error(f"Auth failed: {resp['error']['message']}")
-            return False
-        self.account = resp["authorize"]["loginid"]
-        self.balance = float(resp["authorize"]["balance"])
-        log.info(f"Authorized! Account: {self.account} Balance: {self.balance}")
-        return True
+        def on_message(ws, message):
+            result["data"] = json.loads(message)
+            event.set()
+
+        def on_error(ws, error):
+            result["error"] = str(error)
+            event.set()
+
+        wsapp = ws_lib.WebSocketApp(
+            DERIV_WS_URL,
+            on_message = on_message,
+            on_error   = on_error
+        )
+
+        t = threading.Thread(target=wsapp.run_forever)
+        t.daemon = True
+        t.start()
+        time.sleep(1)
+        wsapp.send(json.dumps(request))
+        event.wait(timeout=15)
+        wsapp.close()
+        return result.get("data", {})
+
+    def _send_sequence(self, requests):
+        import websocket as ws_lib
+        results = []
+        event   = threading.Event()
+        q       = list(requests)
+
+        def on_open(ws):
+            if q:
+                ws.send(json.dumps(q[0]))
+
+        def on_message(ws, message):
+            data = json.loads(message)
+            results.append(data)
+            q.pop(0)
+            if q:
+                ws.send(json.dumps(q[0]))
+            else:
+                event.set()
+
+        def on_error(ws, error):
+            log.error(f"WS error: {error}")
+            event.set()
+
+        wsapp = ws_lib.WebSocketApp(
+            DERIV_WS_URL,
+            on_open    = on_open,
+            on_message = on_message,
+            on_error   = on_error
+        )
+        t = threading.Thread(target=wsapp.run_forever)
+        t.daemon = True
+        t.start()
+        event.wait(timeout=30)
+        wsapp.close()
+        return results
 
     def login(self):
         try:
-            async def _do():
-                async with websockets.connect(DERIV_WS) as ws:
-                    return await self._authorize(ws)
-            result = self._run(_do())
-            if result:
-                log.info("Deriv login successful!")
-            return result
+            log.info("Authorizing with Deriv...")
+            resp = self._send_request({"authorize": self.token})
+            log.info(f"Auth response: {json.dumps(resp)[:300]}")
+
+            if "error" in resp:
+                log.error(f"Auth failed: {resp['error']['message']}")
+                return False
+
+            if "authorize" in resp:
+                self.account    = resp["authorize"]["loginid"]
+                self.balance    = float(resp["authorize"]["balance"])
+                self.authorized = True
+                log.info(f"Authorized! Account: {self.account} Balance: {self.balance}")
+                return True
+
+            log.error(f"Unexpected response: {resp}")
+            return False
         except Exception as e:
             log.error(f"Login error: {e}")
             return False
 
-    # ── Get Price ─────────────────────────────────────────────────────────────
+    def get_balance(self):
+        return self.balance
+
     def get_price(self, asset):
         try:
             symbol = SYMBOLS.get(asset, "frxEURUSD")
-            async def _do():
-                async with websockets.connect(DERIV_WS) as ws:
-                    await self._authorize(ws)
-                    await ws.send(json.dumps({"ticks": symbol}))
-                    resp = json.loads(await ws.recv())
-                    if "tick" in resp:
-                        price = float(resp["tick"]["quote"])
-                        log.info(f"{asset} price: {price}")
-                        return price, price, price
-                    return None, None, None
-            return self._run(_do())
+            results = self._send_sequence([
+                {"authorize": self.token},
+                {"ticks": symbol}
+            ])
+            for r in results:
+                if "tick" in r:
+                    price = float(r["tick"]["quote"])
+                    log.info(f"{asset} price: {price}")
+                    return price, price, price
+            return None, None, None
         except Exception as e:
             log.error(f"get_price error: {e}")
             return None, None, None
 
-    # ── Get Balance ───────────────────────────────────────────────────────────
-    def get_balance(self):
-        try:
-            async def _do():
-                async with websockets.connect(DERIV_WS) as ws:
-                    await self._authorize(ws)
-                    await ws.send(json.dumps({"balance": 1, "subscribe": 0}))
-                    resp = json.loads(await ws.recv())
-                    if "balance" in resp:
-                        bal = float(resp["balance"]["balance"])
-                        log.info(f"Balance: {bal}")
-                        return bal
-                    return self.balance
-            return self._run(_do())
-        except Exception as e:
-            log.error(f"get_balance error: {e}")
-            return self.balance
-
-    # ── Get Open Position ─────────────────────────────────────────────────────
     def get_position(self, asset):
         try:
-            symbol = SYMBOLS.get(asset, "frxEURUSD")
-            async def _do():
-                async with websockets.connect(DERIV_WS) as ws:
-                    await self._authorize(ws)
-                    await ws.send(json.dumps({"portfolio": 1}))
-                    resp = json.loads(await ws.recv())
-                    for contract in resp.get("portfolio", {}).get("contracts", []):
-                        if contract.get("symbol") == symbol:
-                            return contract
-                    return None
-            return self._run(_do())
+            symbol  = SYMBOLS.get(asset, "frxEURUSD")
+            results = self._send_sequence([
+                {"authorize": self.token},
+                {"portfolio": 1}
+            ])
+            for r in results:
+                if "portfolio" in r:
+                    for c in r["portfolio"].get("contracts", []):
+                        if c.get("symbol") == symbol:
+                            return c
+            return None
         except Exception as e:
             log.error(f"get_position error: {e}")
             return None
 
-    # ── Check PnL ─────────────────────────────────────────────────────────────
     def check_pnl(self, position):
         try:
             return float(position.get("profit", 0))
         except:
             return 0
 
-    # ── Place Order ───────────────────────────────────────────────────────────
     def place_order(self, asset, direction, size, stop_distance, limit_distance, currency="USD"):
         try:
             symbol        = SYMBOLS.get(asset, "frxEURUSD")
             contract_type = "CALL" if direction == "BUY" else "PUT"
 
-            async def _do():
-                async with websockets.connect(DERIV_WS) as ws:
-                    await self._authorize(ws)
+            results = self._send_sequence([
+                {"authorize": self.token},
+                {
+                    "proposal":      1,
+                    "amount":        size,
+                    "basis":         "stake",
+                    "contract_type": contract_type,
+                    "currency":      currency,
+                    "duration":      5,
+                    "duration_unit": "m",
+                    "symbol":        symbol
+                }
+            ])
 
-                    # Get proposal first
-                    await ws.send(json.dumps({
-                        "proposal":       1,
-                        "amount":         size,
-                        "basis":          "stake",
-                        "contract_type":  contract_type,
-                        "currency":       currency,
-                        "duration":       5,
-                        "duration_unit":  "m",
-                        "symbol":         symbol
-                    }))
+            proposal_id = None
+            for r in results:
+                if "proposal" in r:
+                    if "error" in r:
+                        return {"success": False, "error": r["error"]["message"]}
+                    proposal_id = r["proposal"]["id"]
+                    log.info(f"Proposal ID: {proposal_id}")
 
-                    proposal = json.loads(await ws.recv())
-                    if "error" in proposal:
-                        log.error(f"Proposal error: {proposal['error']['message']}")
-                        return {"success": False, "error": proposal["error"]["message"]}
+            if not proposal_id:
+                return {"success": False, "error": "No proposal received"}
 
-                    proposal_id = proposal["proposal"]["id"]
-                    log.info(f"Proposal: {proposal_id}")
+            results2 = self._send_sequence([
+                {"authorize": self.token},
+                {"buy": proposal_id, "price": size}
+            ])
 
-                    # Buy contract
-                    await ws.send(json.dumps({
-                        "buy":   proposal_id,
-                        "price": size
-                    }))
-
-                    buy_resp = json.loads(await ws.recv())
-                    if "error" in buy_resp:
-                        log.error(f"Buy error: {buy_resp['error']['message']}")
-                        return {"success": False, "error": buy_resp["error"]["message"]}
-
-                    contract_id = buy_resp["buy"]["contract_id"]
+            for r in results2:
+                if "buy" in r:
+                    if "error" in r:
+                        return {"success": False, "error": r["error"]["message"]}
+                    contract_id = r["buy"]["contract_id"]
                     log.info(f"Contract placed! ID: {contract_id}")
                     return {"success": True, "contract_id": contract_id}
 
-            return self._run(_do())
+            return {"success": False, "error": "No buy response"}
         except Exception as e:
             log.error(f"place_order error: {e}")
             return {"success": False, "error": str(e)}
 
-    # ── Close Position ────────────────────────────────────────────────────────
     def close_position(self, position):
         try:
             contract_id = position.get("contract_id")
-            async def _do():
-                async with websockets.connect(DERIV_WS) as ws:
-                    await self._authorize(ws)
-                    await ws.send(json.dumps({"sell": contract_id, "price": 0}))
-                    resp = json.loads(await ws.recv())
-                    if "error" in resp:
-                        return {"success": False, "error": resp["error"]["message"]}
+            results = self._send_sequence([
+                {"authorize": self.token},
+                {"sell": contract_id, "price": 0}
+            ])
+            for r in results:
+                if "sell" in r:
                     return {"success": True}
-            return self._run(_do())
+            return {"success": False, "error": "Close failed"}
         except Exception as e:
             log.error(f"close_position error: {e}")
             return {"success": False, "error": str(e)}
