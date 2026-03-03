@@ -1,15 +1,10 @@
 """
-🧠 5-Layer Signal Intelligence Engine
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Supports: EUR/USD + GBP/USD + XAU/USD (Gold)
-
-Layer 1: Sentiment (Fear & Greed, Gold demand)
-Layer 2: Macro (DXY, Fed, CPI, Interest rates)
-Layer 3: Cross-Market (S&P500, VIX, Oil)
-Layer 4: Fundamentals (COT report, Central banks)
-Layer 5: Technical (RSI, MACD, BB, Stochastic, ATR)
+5-Layer Signal Engine
+Uses OANDA real-time candles for Layer 5
+Much more accurate than Yahoo Finance!
 """
 
+import os
 import requests
 import logging
 import math
@@ -20,365 +15,328 @@ log = logging.getLogger(__name__)
 
 class SignalEngine:
     def __init__(self):
-        self.sg_tz = pytz.timezone("Asia/Singapore")
-        self.asset = "EURUSD"
+        self.sg_tz      = pytz.timezone("Asia/Singapore")
+        self.asset      = "EURUSD"
+        self.api_key    = os.environ.get("OANDA_API_KEY", "")
+        self.account_id = os.environ.get("OANDA_ACCOUNT_ID", "")
+        self.base_url   = "https://api-fxpractice.oanda.com"
+        self.headers    = {"Authorization": f"Bearer {self.api_key}"}
 
-    # ─── MASTER ANALYSIS ────────────────────────────────────────────────────
+    # OANDA instrument map
+    OANDA_MAP = {
+        "EURUSD": "EUR_USD",
+        "GBPUSD": "GBP_USD",
+        "XAUUSD": "XAU_USD"
+    }
+
     def analyze(self, asset="EURUSD"):
         self.asset = asset
-        log.info(f"\n{'='*40}")
-        log.info(f"🔍 Analyzing {asset}...")
+        log.info(f"Analyzing {asset}...")
 
-        results = {}
-        results["sentiment"]   = self._layer1_sentiment()
-        results["macro"]       = self._layer2_macro()
-        results["crossmarket"] = self._layer3_crossmarket()
-        results["fundamental"] = self._layer4_fundamental()
-        results["technical"]   = self._layer5_technical()
+        l1 = self._layer1_sentiment()
+        l2 = self._layer2_macro()
+        l3 = self._layer3_crossmarket()
+        l4 = self._layer4_session()
+        l5 = self._layer5_technical()
 
-        bull = sum(1 for v in results.values() if v["signal"] == "BULL")
-        bear = sum(1 for v in results.values() if v["signal"] == "BEAR")
+        layers = [l1, l2, l3, l4, l5]
+        bull   = sum(1 for l in layers if l["signal"] == "BULL")
+        bear   = sum(1 for l in layers if l["signal"] == "BEAR")
 
-        score     = max(bull, bear)
-        direction = "BUY" if bull > bear else ("SELL" if bear > bull else "NONE")
+        log.info(f"L1:{l1['signal']} L2:{l2['signal']} L3:{l3['signal']} L4:{l4['signal']} L5:{l5['signal']}")
+        log.info(f"Bull:{bull} Bear:{bear}")
 
-        if bull == bear:
-            direction = "NONE"
+        if bull > bear:
+            score     = bull
+            direction = "BUY"
+        elif bear > bull:
+            score     = bear
+            direction = "SELL"
+        else:
             score     = 0
+            direction = "NONE"
 
-        details = "\n".join([
-            f"  L{i+1} {k}: {v['signal']} → {v['reason']}"
-            for i, (k, v) in enumerate(results.items())
-        ])
+        details = (
+            f"L1 Sentiment: {l1['signal']} | {l1['reason']}\n"
+            f"L2 Macro: {l2['signal']} | {l2['reason']}\n"
+            f"L3 Market: {l3['signal']} | {l3['reason']}\n"
+            f"L4 Session: {l4['signal']} | {l4['reason']}\n"
+            f"L5 Technical: {l5['signal']} | {l5['reason']}"
+        )
 
-        log.info(f"{asset} | Bull:{bull} Bear:{bear} → {direction} ({score}/5)")
         return score, direction, details
 
-    # ─── LAYER 1: SENTIMENT ──────────────────────────────────────────────────
+    # LAYER 1: USD Sentiment via DXY
     def _layer1_sentiment(self):
         try:
-            if self.asset == "XAUUSD":
-                # Gold loves fear! Check VIX
-                r = requests.get(
-                    "https://query1.finance.yahoo.com/v8/finance/chart/^VIX?interval=1d&range=5d",
-                    timeout=10, headers={"User-Agent": "Mozilla/5.0"}
-                )
-                closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
-                if closes:
-                    vix = closes[-1]
-                    log.info(f"VIX: {vix:.1f}")
-                    if vix > 20:
-                        return {"signal": "BULL", "reason": f"VIX={vix:.0f} → fear rising → Gold bullish 🥇"}
-                    elif vix < 15:
-                        return {"signal": "BEAR", "reason": f"VIX={vix:.0f} → calm market → Gold weak"}
-                return {"signal": "NEUTRAL", "reason": "VIX neutral"}
+            r = requests.get(
+                "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?interval=1d&range=5d",
+                timeout=10, headers={"User-Agent": "Mozilla/5.0"}
+            )
+            closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
+            if len(closes) >= 2:
+                chg = ((closes[-1] - closes[-2]) / closes[-2]) * 100
+                log.info(f"DXY change: {chg:+.3f}%")
 
-            else:
-                # Forex: check USD sentiment via Dollar Index
-                r = requests.get(
-                    "https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?interval=1d&range=5d",
-                    timeout=10, headers={"User-Agent": "Mozilla/5.0"}
-                )
-                closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
-                if len(closes) >= 2:
-                    dxy = closes[-1]
-                    dxy_chg = ((closes[-1] - closes[-2]) / closes[-2]) * 100
-                    log.info(f"DXY: {dxy:.2f} ({dxy_chg:+.2f}%)")
+                if self.asset == "XAUUSD":
+                    if chg < -0.2:
+                        return {"signal": "BULL", "reason": f"USD weak {chg:.2f}% = Gold up"}
+                    elif chg > 0.2:
+                        return {"signal": "BEAR", "reason": f"USD strong {chg:.2f}% = Gold down"}
+                else:
+                    if chg < -0.2:
+                        return {"signal": "BULL", "reason": f"USD weak {chg:.2f}% = {self.asset} up"}
+                    elif chg > 0.2:
+                        return {"signal": "BEAR", "reason": f"USD strong {chg:.2f}% = {self.asset} down"}
 
-                    # EUR/USD and GBP/USD are INVERSE to DXY
-                    if dxy_chg < -0.2:
-                        return {"signal": "BULL", "reason": f"USD weakening {dxy_chg:.2f}% → {self.asset} bullish"}
-                    elif dxy_chg > 0.2:
-                        return {"signal": "BEAR", "reason": f"USD strengthening {dxy_chg:.2f}% → {self.asset} bearish"}
-                return {"signal": "NEUTRAL", "reason": "USD sentiment neutral"}
+            return {"signal": "NEUTRAL", "reason": "DXY flat"}
         except Exception as e:
-            log.warning(f"Layer 1 error: {e}")
-            return {"signal": "NEUTRAL", "reason": "Sentiment unavailable"}
+            log.warning(f"L1 error: {e}")
+            return {"signal": "NEUTRAL", "reason": "L1 unavailable"}
 
-    # ─── LAYER 2: MACRO ──────────────────────────────────────────────────────
+    # LAYER 2: Bond Yields (10Y Treasury)
     def _layer2_macro(self):
         try:
-            now = datetime.now(self.sg_tz)
-
-            # Check US 10Y Treasury yield (affects forex + gold)
             r = requests.get(
                 "https://query1.finance.yahoo.com/v8/finance/chart/^TNX?interval=1d&range=5d",
                 timeout=10, headers={"User-Agent": "Mozilla/5.0"}
             )
             closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
-
             if len(closes) >= 2:
-                yield_chg = closes[-1] - closes[-2]
-                log.info(f"US 10Y yield change: {yield_chg:+.3f}%")
+                chg = closes[-1] - closes[-2]
+                log.info(f"10Y yield change: {chg:+.3f}")
 
                 if self.asset == "XAUUSD":
-                    # Rising yields = bad for Gold (no yield)
-                    if yield_chg > 0.05:
-                        return {"signal": "BEAR", "reason": f"Bond yields rising {yield_chg:+.3f}% → Gold headwind"}
-                    elif yield_chg < -0.05:
-                        return {"signal": "BULL", "reason": f"Bond yields falling {yield_chg:+.3f}% → Gold bullish"}
+                    if chg < -0.05:
+                        return {"signal": "BULL", "reason": f"Yields falling = Gold up"}
+                    elif chg > 0.05:
+                        return {"signal": "BEAR", "reason": f"Yields rising = Gold down"}
                 else:
-                    # Rising US yields = USD stronger = EUR/GBP weaker
-                    if yield_chg > 0.05:
-                        return {"signal": "BEAR", "reason": f"US yields rising → USD stronger → {self.asset} bearish"}
-                    elif yield_chg < -0.05:
-                        return {"signal": "BULL", "reason": f"US yields falling → USD weaker → {self.asset} bullish"}
+                    if chg < -0.05:
+                        return {"signal": "BULL", "reason": f"Yields falling = USD weak = {self.asset} up"}
+                    elif chg > 0.05:
+                        return {"signal": "BEAR", "reason": f"Yields rising = USD strong = {self.asset} down"}
 
-            # High risk day check
-            if now.weekday() == 4:  # Friday
-                return {"signal": "BEAR", "reason": "Friday → position closing → caution"}
-
-            return {"signal": "NEUTRAL", "reason": "Macro conditions neutral"}
+            return {"signal": "NEUTRAL", "reason": "Yields flat"}
         except Exception as e:
-            log.warning(f"Layer 2 error: {e}")
-            return {"signal": "NEUTRAL", "reason": "Macro data unavailable"}
+            log.warning(f"L2 error: {e}")
+            return {"signal": "NEUTRAL", "reason": "L2 unavailable"}
 
-    # ─── LAYER 3: CROSS-MARKET ───────────────────────────────────────────────
+    # LAYER 3: SP500 Risk Sentiment
     def _layer3_crossmarket(self):
         try:
-            signals = {}
-
-            for ticker, name in [("^GSPC", "SP500"), ("GC=F", "Gold"), ("CL=F", "Oil")]:
-                try:
-                    r = requests.get(
-                        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=5d",
-                        timeout=10, headers={"User-Agent": "Mozilla/5.0"}
-                    )
-                    closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
-                    if len(closes) >= 2:
-                        chg = ((closes[-1] - closes[-2]) / closes[-2]) * 100
-                        signals[name] = chg
-                        log.info(f"{name}: {chg:+.2f}%")
-                except:
-                    pass
-
-            if self.asset == "XAUUSD":
-                sp500 = signals.get("SP500", 0)
-                oil   = signals.get("Oil", 0)
-                if sp500 < -0.5:
-                    return {"signal": "BULL", "reason": f"SP500 down {sp500:.1f}% → safe haven → Gold up"}
-                elif oil > 1.0:
-                    return {"signal": "BULL", "reason": f"Oil up {oil:.1f}% → inflation → Gold up"}
-                elif sp500 > 1.0:
-                    return {"signal": "BEAR", "reason": f"Risk-on SP500 +{sp500:.1f}% → Gold weak"}
-
-            elif self.asset in ["EURUSD", "GBPUSD"]:
-                sp500 = signals.get("SP500", 0)
-                if sp500 > 0.5:
-                    return {"signal": "BULL", "reason": f"Risk-on SP500 +{sp500:.1f}% → EUR/GBP stronger"}
-                elif sp500 < -0.5:
-                    return {"signal": "BEAR", "reason": f"Risk-off SP500 {sp500:.1f}% → USD stronger"}
-
-            return {"signal": "NEUTRAL", "reason": "Cross-market neutral"}
-        except Exception as e:
-            log.warning(f"Layer 3 error: {e}")
-            return {"signal": "NEUTRAL", "reason": "Cross-market unavailable"}
-
-    # ─── LAYER 4: FUNDAMENTALS ───────────────────────────────────────────────
-    def _layer4_fundamental(self):
-        try:
-            now = datetime.now(self.sg_tz)
-
-            if self.asset == "XAUUSD":
-                # Gold: check inflation expectations (TIPS ETF)
-                r = requests.get(
-                    "https://query1.finance.yahoo.com/v8/finance/chart/TIP?interval=1d&range=5d",
-                    timeout=10, headers={"User-Agent": "Mozilla/5.0"}
-                )
-                closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
-                if len(closes) >= 2:
-                    tip_chg = ((closes[-1] - closes[-2]) / closes[-2]) * 100
-                    log.info(f"TIPS ETF: {tip_chg:+.2f}%")
-                    if tip_chg > 0.1:
-                        return {"signal": "BULL", "reason": f"Inflation expectations rising → Gold bullish"}
-                    elif tip_chg < -0.1:
-                        return {"signal": "BEAR", "reason": f"Real yields rising → Gold headwind"}
-
-            elif self.asset == "EURUSD":
-                # EUR: check EU vs US yield differential
-                r = requests.get(
-                    "https://query1.finance.yahoo.com/v8/finance/chart/FXE?interval=1d&range=5d",
-                    timeout=10, headers={"User-Agent": "Mozilla/5.0"}
-                )
-                closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
-                if len(closes) >= 2:
-                    fxe_chg = ((closes[-1] - closes[-2]) / closes[-2]) * 100
-                    log.info(f"EUR ETF: {fxe_chg:+.2f}%")
-                    if fxe_chg > 0.1:
-                        return {"signal": "BULL", "reason": f"EUR ETF momentum positive → EURUSD bullish"}
-                    elif fxe_chg < -0.1:
-                        return {"signal": "BEAR", "reason": f"EUR ETF momentum negative → EURUSD bearish"}
-
-            elif self.asset == "GBPUSD":
-                # GBP: check UK ETF / GBP momentum
-                r = requests.get(
-                    "https://query1.finance.yahoo.com/v8/finance/chart/FXB?interval=1d&range=5d",
-                    timeout=10, headers={"User-Agent": "Mozilla/5.0"}
-                )
-                closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
-                if len(closes) >= 2:
-                    fxb_chg = ((closes[-1] - closes[-2]) / closes[-2]) * 100
-                    log.info(f"GBP ETF: {fxb_chg:+.2f}%")
-                    if fxb_chg > 0.1:
-                        return {"signal": "BULL", "reason": f"GBP ETF positive → GBPUSD bullish"}
-                    elif fxb_chg < -0.1:
-                        return {"signal": "BEAR", "reason": f"GBP ETF negative → GBPUSD bearish"}
-
-            return {"signal": "NEUTRAL", "reason": "Fundamentals neutral"}
-        except Exception as e:
-            log.warning(f"Layer 4 error: {e}")
-            return {"signal": "NEUTRAL", "reason": "Fundamental data unavailable"}
-
-    # ─── LAYER 5: TECHNICAL ──────────────────────────────────────────────────
-    def _layer5_technical(self):
-        try:
-            # Get price data from Yahoo Finance
-            ticker_map = {
-                "EURUSD": "EURUSD=X",
-                "GBPUSD": "GBPUSD=X",
-                "XAUUSD": "GC=F"
-            }
-            ticker = ticker_map.get(self.asset, "EURUSD=X")
-
             r = requests.get(
-                f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=15m&range=5d",
+                "https://query1.finance.yahoo.com/v8/finance/chart/^GSPC?interval=1d&range=5d",
                 timeout=10, headers={"User-Agent": "Mozilla/5.0"}
             )
-            result = r.json()["chart"]["result"][0]
-            quotes = result["indicators"]["quote"][0]
+            closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
+            if len(closes) >= 2:
+                chg = ((closes[-1] - closes[-2]) / closes[-2]) * 100
+                log.info(f"SP500 change: {chg:+.2f}%")
 
-            closes = [c for c in quotes["close"] if c]
-            highs  = [c for c in quotes["high"]  if c]
-            lows   = [c for c in quotes["low"]   if c]
-            vols   = [c for c in quotes.get("volume", [1]*200) if c]
+                if self.asset == "XAUUSD":
+                    if chg < -0.5:
+                        return {"signal": "BULL", "reason": f"Risk-off SP500 {chg:.1f}% = Gold safe haven"}
+                    elif chg > 0.5:
+                        return {"signal": "BEAR", "reason": f"Risk-on SP500 +{chg:.1f}% = Gold weak"}
+                else:
+                    if chg > 0.5:
+                        return {"signal": "BULL", "reason": f"Risk-on SP500 +{chg:.1f}% = {self.asset} up"}
+                    elif chg < -0.5:
+                        return {"signal": "BEAR", "reason": f"Risk-off SP500 {chg:.1f}% = {self.asset} down"}
+
+            return {"signal": "NEUTRAL", "reason": "SP500 flat"}
+        except Exception as e:
+            log.warning(f"L3 error: {e}")
+            return {"signal": "NEUTRAL", "reason": "L3 unavailable"}
+
+    # LAYER 4: Trading Session Strength
+    def _layer4_session(self):
+        try:
+            now  = datetime.now(self.sg_tz)
+            hour = now.hour
+
+            # London open 3pm-5pm SGT = strongest moves
+            if 15 <= hour <= 17:
+                return {"signal": "BULL", "reason": f"London open {hour}:00 SGT = high volatility"}
+
+            # London+NY overlap 9pm-11pm SGT = BEST session
+            if 21 <= hour <= 23:
+                return {"signal": "BULL", "reason": f"London+NY overlap {hour}:00 SGT = BEST session!"}
+
+            # NY open 9:30pm SGT
+            if hour == 20:
+                return {"signal": "BULL", "reason": f"NY open {hour}:00 SGT = good momentum"}
+
+            # Dead hours Asia 1am-7am SGT = avoid
+            if 1 <= hour <= 7:
+                return {"signal": "BEAR", "reason": f"Asia slow hours {hour}:00 SGT = low momentum"}
+
+            # Friday afternoon = reduce risk
+            if now.weekday() == 4 and hour >= 18:
+                return {"signal": "BEAR", "reason": "Friday PM = position closing risk"}
+
+            return {"signal": "NEUTRAL", "reason": f"Normal hours {hour}:00 SGT"}
+        except Exception as e:
+            log.warning(f"L4 error: {e}")
+            return {"signal": "NEUTRAL", "reason": "L4 unavailable"}
+
+    # LAYER 5: Technical Analysis using OANDA candles
+    def _layer5_technical(self):
+        try:
+            instrument = self.OANDA_MAP.get(self.asset, "EUR_USD")
+
+            # Get 100 candles of 15min data from OANDA
+            url    = f"{self.base_url}/v3/instruments/{instrument}/candles"
+            params = {"count": "100", "granularity": "M15", "price": "M"}
+            r      = requests.get(url, headers=self.headers, params=params, timeout=10)
+
+            if r.status_code != 200:
+                log.warning(f"OANDA candles failed: {r.status_code} - falling back to Yahoo")
+                return self._layer5_yahoo_fallback()
+
+            candles = r.json()["candles"]
+            closes  = [float(c["mid"]["c"]) for c in candles if c["complete"]]
+            highs   = [float(c["mid"]["h"]) for c in candles if c["complete"]]
+            lows    = [float(c["mid"]["l"]) for c in candles if c["complete"]]
 
             if len(closes) < 30:
-                return {"signal": "NEUTRAL", "reason": "Not enough data"}
+                return {"signal": "NEUTRAL", "reason": "Not enough candles"}
 
-            bull_signals = 0
-            bear_signals = 0
-            reasons      = []
+            bull = 0
+            bear = 0
+            reasons = []
 
-            # ── RSI (14) ─────────────────────────────────────────────────────
-            rsi = self._calc_rsi(closes, 14)
+            # RSI
+            rsi = self._rsi(closes, 14)
             log.info(f"RSI: {rsi:.1f}")
-            if rsi < 30:
-                bull_signals += 2
-                reasons.append(f"RSI oversold {rsi:.0f} 🟢🟢")
-            elif rsi < 45:
-                bull_signals += 1
-                reasons.append(f"RSI low {rsi:.0f} 🟢")
-            elif rsi > 70:
-                bear_signals += 2
-                reasons.append(f"RSI overbought {rsi:.0f} 🔴🔴")
-            elif rsi > 55:
-                bear_signals += 1
-                reasons.append(f"RSI high {rsi:.0f} 🔴")
+            if rsi < 35:
+                bull += 1
+                reasons.append(f"RSI oversold {rsi:.0f}")
+            elif rsi > 65:
+                bear += 1
+                reasons.append(f"RSI overbought {rsi:.0f}")
 
-            # ── MACD (12,26,9) ────────────────────────────────────────────────
-            ema12      = self._ema(closes, 12)
-            ema26      = self._ema(closes, 26)
-            macd_line  = [e12 - e26 for e12, e26 in zip(ema12[-len(ema26):], ema26)]
-            signal_ema = self._ema(macd_line, 9)
-            macd_hist  = macd_line[-1] - signal_ema[-1]
-            macd_prev  = macd_line[-2] - signal_ema[-2]
-            log.info(f"MACD hist: {macd_hist:.6f}")
-            if macd_hist > 0 and macd_prev <= 0:
-                bull_signals += 2
-                reasons.append("MACD bullish cross 🟢🟢")
-            elif macd_hist < 0 and macd_prev >= 0:
-                bear_signals += 2
-                reasons.append("MACD bearish cross 🔴🔴")
-            elif macd_hist > 0:
-                bull_signals += 1
-                reasons.append("MACD positive 🟢")
-            else:
-                bear_signals += 1
-                reasons.append("MACD negative 🔴")
+            # MACD
+            ema12     = self._ema(closes, 12)
+            ema26     = self._ema(closes, 26)
+            macd      = [a - b for a, b in zip(ema12[-len(ema26):], ema26)]
+            sig       = self._ema(macd, 9)
+            hist      = macd[-1] - sig[-1]
+            prev_hist = macd[-2] - sig[-2]
+            log.info(f"MACD hist: {hist:.6f}")
+            if hist > 0 and prev_hist <= 0:
+                bull += 1
+                reasons.append("MACD bullish cross")
+            elif hist < 0 and prev_hist >= 0:
+                bear += 1
+                reasons.append("MACD bearish cross")
+            elif hist > 0:
+                bull += 1
+                reasons.append("MACD positive")
+            elif hist < 0:
+                bear += 1
+                reasons.append("MACD negative")
 
-            # ── Bollinger Bands (20,2) ────────────────────────────────────────
-            bb_period = 20
-            bb_mid    = sum(closes[-bb_period:]) / bb_period
-            bb_std    = math.sqrt(sum((c - bb_mid)**2 for c in closes[-bb_period:]) / bb_period)
-            bb_upper  = bb_mid + 2 * bb_std
-            bb_lower  = bb_mid - 2 * bb_std
-            bb_pct    = (closes[-1] - bb_lower) / (bb_upper - bb_lower) * 100
-            log.info(f"BB %B: {bb_pct:.1f}%")
-            if bb_pct < 10:
-                bull_signals += 2
-                reasons.append(f"BB oversold %B={bb_pct:.0f}% 🟢🟢")
-            elif bb_pct > 90:
-                bear_signals += 2
-                reasons.append(f"BB overbought %B={bb_pct:.0f}% 🔴🔴")
-            elif bb_pct < 30:
-                bull_signals += 1
-                reasons.append(f"Near BB lower 🟢")
-            elif bb_pct > 70:
-                bear_signals += 1
-                reasons.append(f"Near BB upper 🔴")
+            # Bollinger Bands
+            bb_mid = sum(closes[-20:]) / 20
+            bb_std = math.sqrt(sum((c - bb_mid)**2 for c in closes[-20:]) / 20)
+            bb_up  = bb_mid + 2 * bb_std
+            bb_dn  = bb_mid - 2 * bb_std
+            pct_b  = (closes[-1] - bb_dn) / (bb_up - bb_dn) * 100 if bb_up != bb_dn else 50
+            log.info(f"BB%B: {pct_b:.1f}")
+            if pct_b < 20:
+                bull += 1
+                reasons.append(f"BB oversold {pct_b:.0f}%")
+            elif pct_b > 80:
+                bear += 1
+                reasons.append(f"BB overbought {pct_b:.0f}%")
 
-            # ── Stochastic (14,3) ─────────────────────────────────────────────
-            stoch = self._calc_stochastic(closes, highs, lows, 14)
-            log.info(f"Stochastic: {stoch:.1f}")
-            if stoch < 20:
-                bull_signals += 1
-                reasons.append(f"Stoch oversold {stoch:.0f} 🟢")
-            elif stoch > 80:
-                bear_signals += 1
-                reasons.append(f"Stoch overbought {stoch:.0f} 🔴")
+            # Stochastic
+            stoch = self._stochastic(closes, highs, lows, 14)
+            log.info(f"Stoch: {stoch:.1f}")
+            if stoch < 25:
+                bull += 1
+                reasons.append(f"Stoch oversold {stoch:.0f}")
+            elif stoch > 75:
+                bear += 1
+                reasons.append(f"Stoch overbought {stoch:.0f}")
 
-            # ── MA50 Trend ────────────────────────────────────────────────────
+            # MA trend
             if len(closes) >= 50:
                 ma50 = sum(closes[-50:]) / 50
-                if closes[-1] > ma50:
-                    bull_signals += 1
-                    reasons.append("Above MA50 🟢")
+                ma20 = sum(closes[-20:]) / 20
+                if ma20 > ma50:
+                    bull += 1
+                    reasons.append("MA20 > MA50 uptrend")
                 else:
-                    bear_signals += 1
-                    reasons.append("Below MA50 🔴")
+                    bear += 1
+                    reasons.append("MA20 < MA50 downtrend")
 
-            # ── Final Decision ────────────────────────────────────────────────
-            reason_str = " | ".join(reasons)
-            log.info(f"Technical: Bull={bull_signals} Bear={bear_signals}")
-            if bull_signals > bear_signals:
+            reason_str = " | ".join(reasons) if reasons else "No signals"
+            log.info(f"Technical bull={bull} bear={bear}")
+
+            if bull > bear:
                 return {"signal": "BULL", "reason": reason_str}
-            elif bear_signals > bull_signals:
+            elif bear > bull:
                 return {"signal": "BEAR", "reason": reason_str}
             return {"signal": "NEUTRAL", "reason": reason_str}
 
         except Exception as e:
-            log.warning(f"Layer 5 error: {e}")
-            return {"signal": "NEUTRAL", "reason": f"Technical error: {e}"}
+            log.warning(f"L5 OANDA error: {e} - trying Yahoo")
+            return self._layer5_yahoo_fallback()
 
-    # ─── HELPERS ─────────────────────────────────────────────────────────────
-    def _calc_rsi(self, closes, period=14):
+    # Fallback if OANDA candles fail
+    def _layer5_yahoo_fallback(self):
+        try:
+            ticker_map = {"EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X", "XAUUSD": "GC=F"}
+            ticker     = ticker_map.get(self.asset, "EURUSD=X")
+            r          = requests.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1h&range=5d",
+                timeout=10, headers={"User-Agent": "Mozilla/5.0"}
+            )
+            quotes = r.json()["chart"]["result"][0]["indicators"]["quote"][0]
+            closes = [c for c in quotes["close"] if c]
+            if len(closes) < 20:
+                return {"signal": "NEUTRAL", "reason": "No data"}
+
+            rsi = self._rsi(closes, 14)
+            if rsi < 35:
+                return {"signal": "BULL", "reason": f"Yahoo RSI oversold {rsi:.0f}"}
+            elif rsi > 65:
+                return {"signal": "BEAR", "reason": f"Yahoo RSI overbought {rsi:.0f}"}
+            return {"signal": "NEUTRAL", "reason": f"Yahoo RSI neutral {rsi:.0f}"}
+        except:
+            return {"signal": "NEUTRAL", "reason": "No technical data"}
+
+    def _rsi(self, closes, period=14):
         gains, losses = [], []
         for i in range(1, len(closes)):
-            diff = closes[i] - closes[i-1]
-            gains.append(max(diff, 0))
-            losses.append(max(-diff, 0))
+            d = closes[i] - closes[i-1]
+            gains.append(max(d, 0))
+            losses.append(max(-d, 0))
         if len(gains) < period:
             return 50
-        avg_gain = sum(gains[-period:]) / period
-        avg_loss = sum(losses[-period:]) / period
-        if avg_loss == 0:
+        ag = sum(gains[-period:]) / period
+        al = sum(losses[-period:]) / period
+        if al == 0:
             return 100
-        return 100 - (100 / (1 + avg_gain / avg_loss))
+        return 100 - (100 / (1 + ag / al))
 
     def _ema(self, data, period):
         if len(data) < period:
             return [sum(data) / len(data)] * len(data)
         emas = [sum(data[:period]) / period]
         mult = 2 / (period + 1)
-        for price in data[period:]:
-            emas.append((price - emas[-1]) * mult + emas[-1])
+        for p in data[period:]:
+            emas.append((p - emas[-1]) * mult + emas[-1])
         return emas
 
-    def _calc_stochastic(self, closes, highs, lows, period=14):
+    def _stochastic(self, closes, highs, lows, period=14):
         if len(closes) < period:
             return 50
-        highest = max(highs[-period:])
-        lowest  = min(lows[-period:])
-        if highest == lowest:
+        h = max(highs[-period:])
+        l = min(lows[-period:])
+        if h == l:
             return 50
-        return ((closes[-1] - lowest) / (highest - lowest)) * 100
+        return ((closes[-1] - l) / (h - l)) * 100
