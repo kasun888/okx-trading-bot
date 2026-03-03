@@ -11,7 +11,7 @@ jobs:
   trade:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -19,10 +19,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install
         run: pip install -r requirements.txt
 
-      - name: Run IG Trading Bot
+      - name: Run Bot
         env:
           IG_USERNAME:      ${{ secrets.IG_USERNAME }}
           IG_PASSWORD:      ${{ secrets.IG_PASSWORD }}
@@ -32,32 +32,12 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python bot.py
 
-      - name: Save trade logs
+      - name: Save logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ig-trade-logs-${{ github.run_number }}
+          name: logs
           path: |
             trades_*.json
             performance_log.txt
           retention-days: 30
-```
-
----
-
-## ⚠️ Important When Pasting on GitHub
-```
-Make sure indentation is correct!
-YAML is very strict about spaces!
-
-If you see red error lines →
-the spaces are wrong somewhere
-```
-
----
-
-## ✅ No Test Step — Production Only!
-```
-Removed: Debug IG Login step
-Kept:    Run IG Trading Bot ✅
-Kept:    Save trade logs ✅
