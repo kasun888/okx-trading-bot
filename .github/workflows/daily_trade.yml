@@ -22,16 +22,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Debug IG Login
-        env:
-          IG_USERNAME:      ${{ secrets.IG_USERNAME }}
-          IG_PASSWORD:      ${{ secrets.IG_PASSWORD }}
-          IG_API_KEY5:      ${{ secrets.IG_API_KEY5 }}
-          IG_ACC_NUMBER:    ${{ secrets.IG_ACC_NUMBER }}
-          TELEGRAM_TOKEN:   ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python test_connection.py
-
       - name: Run IG Trading Bot
         env:
           IG_USERNAME:      ${{ secrets.IG_USERNAME }}
@@ -55,25 +45,19 @@ jobs:
 
 ---
 
-## 📤 Update on GitHub
+## ⚠️ Important When Pasting on GitHub
 ```
-GitHub repo
-→ .github/workflows
-→ daily_trade.yml
-→ Click pencil ✏️
-→ Select ALL → delete
-→ Paste above code
-→ Commit changes ✅
+Make sure indentation is correct!
+YAML is very strict about spaces!
+
+If you see red error lines →
+the spaces are wrong somewhere
 ```
 
 ---
 
-## ✅ What Changed
+## ✅ No Test Step — Production Only!
 ```
-Before: IG_API_KEY:  ${{ secrets.IG_API_KEY5 }}
-After:  IG_API_KEY5: ${{ secrets.IG_API_KEY5 }}
-
-Now everything matches:
-Secret name:    IG_API_KEY5 ✅
-Workflow sends: IG_API_KEY5 ✅
-Bot reads:      IG_API_KEY5 ✅
+Removed: Debug IG Login step
+Kept:    Run IG Trading Bot ✅
+Kept:    Save trade logs ✅
