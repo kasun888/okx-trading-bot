@@ -15,6 +15,12 @@ TRADING HOURS: 24 hours Mon–Fri (SGT = UTC+8)
   Rollover    23:00–24:00 SGT  max spread 3.0p  (skip if spread too wide)
 
 Chaos filter (>150 pip range) + ATR flat filter still protect quality.
+
+TARGET: 1 WIN PER DAY then stop — protect the profit.
+SESSIONS: London 07-15 SGT + NY 15-23 SGT only.
+TP=25 pips | SL=15 pips | 50,000 units
+  London → +SGD 125 win / -SGD 75 loss
+  NY     → +SGD 125 win / -SGD 75 loss
 """
 
 import os, json, time, logging, requests
@@ -33,15 +39,26 @@ log = logging.getLogger(__name__)
 sg_tz   = pytz.timezone("Asia/Singapore")
 signals = SignalEngine()
 
-TRADE_SIZE   = 74000
-SL_PIPS      = 13
-TP_PIPS      = 26
-MAX_DURATION = 45  # extended from 30 — gives 26-pip TP more time to hit
+TRADE_SIZE   = 50000
+MAX_DURATION = 45
+
+# ── DYNAMIC TP/SL PER SESSION ────────────────────────────────
+# TP matched to realistic 45-min EUR/USD move per session.
+# Asian/Rollover move only 6-10 pips per 45min — 26p TP never hits.
+# London/NY move 18-22 pips — 20p TP achievable.
+# TARGET: 1 WIN per day then stop. After win = done for the day.
+SESSION_TP_SL = {
+    "London": {"tp": 25, "sl": 15},  # +SGD 125 / -SGD 75
+    "NY":     {"tp": 25, "sl": 15},  # +SGD 125 / -SGD 75
+}
+# Fallback
+SL_PIPS = 15
+TP_PIPS = 25
 
 # Account is natively SGD — no conversion needed.
 # P&L from OANDA API (realizedPL / unrealizedPL) is also in account currency (SGD).
 # SL/TP SGD estimates use a fixed SGD pip value for EUR/USD at ~1.35 SGD per pip per 10k units.
-SGD_PER_PIP_PER_10K = 1.35   # approximate; EUR/USD 1 pip ≈ USD 1 per 10k → SGD 1.35
+SGD_PER_PIP_PER_10K = 1.35   # EUR/USD 1 pip ≈ USD 1 per 10k → SGD 1.35 | 50k units = SGD 6.75/pip
 
 ASSETS = {
     "EUR_USD": {
@@ -53,10 +70,8 @@ ASSETS = {
         "stop_pips":  SL_PIPS,
         "tp_pips":    TP_PIPS,
         "sessions": [
-            {"start":  0, "end":  7, "max_spread": 2.0, "label": "Asian"},
             {"start":  7, "end": 15, "max_spread": 1.2, "label": "London"},
             {"start": 15, "end": 23, "max_spread": 1.5, "label": "NY"},
-            {"start": 23, "end": 24, "max_spread": 3.0, "label": "Rollover"},
         ],
     },
 }
@@ -249,10 +264,8 @@ def check_session_open_alerts(state, alert, trader, now, today):
     """Send session open alert once per window per day."""
     hour = now.hour
     windows = [
-        {"start":  0, "label": "Asian",    "hours": "00:00–07:00 SGT"},
-        {"start":  7, "label": "London",   "hours": "07:00–15:00 SGT"},
-        {"start": 15, "label": "NY",       "hours": "15:00–23:00 SGT"},
-        {"start": 23, "label": "Rollover", "hours": "23:00–00:00 SGT"},
+        {"start":  7, "label": "London", "hours": "07:00–15:00 SGT"},
+        {"start": 15, "label": "NY",     "hours": "15:00–23:00 SGT"},
     ]
     for w in windows:
         if hour == w["start"]:
@@ -286,10 +299,8 @@ def check_session_close_alerts(state, alert, trader, now, today):
     """Send session close alert when a window ends."""
     hour = now.hour
     windows = [
-        {"end":  7, "label": "Asian"},
         {"end": 15, "label": "London"},
         {"end": 23, "label": "NY"},
-        {"end":  0, "label": "Rollover"},
     ]
     for w in windows:
         # Fire at the first minute of the closing hour
@@ -425,6 +436,13 @@ def run_bot(state):
         log.info("Friday 23:00 SGT+ — no new trades (weekend risk). Monitoring open positions only.")
         return
 
+    # ── WIN-STOP: 1 WIN PER DAY — after first win, stop trading ────────
+    # Goal: 1 clean winning trade per day, then protect the profit.
+    # If today already has a win, skip all new entries.
+    if state.get("wins", 0) >= 1:
+        log.info("✅ WIN-STOP: Already won today — no more trades. Protecting profit.")
+        return
+
     # ── SCAN + TRADE ───────────────────────────────────────────────────
     threshold = settings.get("signal_threshold", 4)
 
@@ -479,13 +497,16 @@ def run_bot(state):
             continue
 
         # ── Place trade ────────────────────────────────────────────────
-        # SL/TP in SGD: 74,000 units = 7.4 lots of 10k; 1 pip per 10k ≈ SGD 1.35
-        sl_sgd = round((TRADE_SIZE / 10000) * SL_PIPS * SGD_PER_PIP_PER_10K, 2)
-        tp_sgd = round((TRADE_SIZE / 10000) * TP_PIPS * SGD_PER_PIP_PER_10K, 2)
+        # Use dynamic TP/SL matched to session volatility
+        sess_tpsl = SESSION_TP_SL.get(session["label"], {"tp": TP_PIPS, "sl": SL_PIPS})
+        use_tp    = sess_tpsl["tp"]
+        use_sl    = sess_tpsl["sl"]
+        sl_sgd = round((TRADE_SIZE / 10000) * use_sl * SGD_PER_PIP_PER_10K, 2)
+        tp_sgd = round((TRADE_SIZE / 10000) * use_tp * SGD_PER_PIP_PER_10K, 2)
 
         result_order = trader.place_order(
             instrument=name, direction=direction, size=TRADE_SIZE,
-            stop_distance=SL_PIPS, limit_distance=TP_PIPS
+            stop_distance=use_sl, limit_distance=use_tp
         )
         if result_order["success"]:
             state["trades"] = state.get("trades", 0) + 1
@@ -505,8 +526,8 @@ def run_bot(state):
             alert.send_trade_open(
                 direction=direction,
                 entry_price=entry_price,
-                sl_pips=SL_PIPS,
-                tp_pips=TP_PIPS,
+                sl_pips=use_sl,
+                tp_pips=use_tp,
                 sl_sgd=sl_sgd,
                 tp_sgd=tp_sgd,
                 spread=spread,
