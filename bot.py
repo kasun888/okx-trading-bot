@@ -1,26 +1,25 @@
 """
-OANDA — EUR/USD 24/5 Scalp Bot
-================================
+OANDA — EUR/USD London + NY Scalp Bot
+======================================
 Pair:    EUR/USD only
-Size:    74,000 units
-SL:      13 pips
-TP:      26 pips  [2:1 R:R]
+Size:    50,000 units
+SL:      15 pips  = SGD 101.25
+TP:      25 pips  = SGD 168.75  [R:R 1.67]
 Max dur: 45 minutes
 Account: SGD
 
-TRADING HOURS: 24 hours Mon–Fri (SGT = UTC+8)
-  Asian       00:00–07:00 SGT  max spread 2.0p  (lower vol, ATR filter protects)
-  London      07:00–15:00 SGT  max spread 1.2p  (best liquidity)
-  NY          15:00–23:00 SGT  max spread 1.5p
-  Rollover    23:00–24:00 SGT  max spread 3.0p  (skip if spread too wide)
-
-Chaos filter (>150 pip range) + ATR flat filter still protect quality.
+SESSIONS (SGT = UTC+8):
+  London  07:00–15:00 SGT  max spread 1.2p
+  NY      15:00–23:00 SGT  max spread 1.5p
 
 TARGET: 1 WIN PER DAY then stop — protect the profit.
-SESSIONS: London 07-15 SGT + NY 15-23 SGT only.
-TP=25 pips | SL=15 pips | 50,000 units
-  London → +SGD 125 win / -SGD 75 loss
-  NY     → +SGD 125 win / -SGD 75 loss
+  First win → bot stops entering new trades until tomorrow.
+
+SMART FILTERS:
+  Chaos filter    — skip if daily range > 150 pips (news shock day)
+  H4 3-bar check  — trend must be consistent for last 3 H4 bars
+  Circuit breaker — 2 SL hits in a row → pause 2 days
+  Smart flip      — after 2 SL, checks if H4 trend flipped direction
 """
 
 import os, json, time, logging, requests
