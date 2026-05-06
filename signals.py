@@ -164,19 +164,20 @@ class SignalEngine:
         h4_ema50_series = self._ema(h4_c, 50)
         h4_ema50        = h4_ema50_series[-1]
 
-        last3_closes = h4_c[-3:]
-        last3_ema    = h4_ema50_series[-3:]
-        bull_h4 = all(c > e for c, e in zip(last3_closes, last3_ema))
-        bear_h4 = all(c < e for c, e in zip(last3_closes, last3_ema))
+        # Use current bar only (same as original working bot)
+        # 3-bar was too strict — blocked valid trending setups
+        h4_price = h4_c[-1]
+        bull_h4 = h4_price > h4_ema50
+        bear_h4 = h4_price < h4_ema50
 
         if bull_h4:
             direction = "BUY"
-            reasons.append("✅ L0 H4 BUY — 3 bars above EMA50=" + str(round(h4_ema50, 5)))
+            reasons.append("✅ L0 H4 BUY — price " + str(round(h4_price,5)) + " above EMA50=" + str(round(h4_ema50, 5)))
         elif bear_h4:
             direction = "SELL"
-            reasons.append("✅ L0 H4 SELL — 3 bars below EMA50=" + str(round(h4_ema50, 5)))
+            reasons.append("✅ L0 H4 SELL — price " + str(round(h4_price,5)) + " below EMA50=" + str(round(h4_ema50, 5)))
         else:
-            return 0, "NONE", "H4 trend inconsistent — last 3 bars mixed (possible reversal)", {"L0":"❌ INCONSISTENT"}
+            return 0, "NONE", "H4 EMA50 flat — no direction", {"L0":"❌ FLAT"}
 
         score = 1
 
@@ -194,7 +195,7 @@ class SignalEngine:
         today_high = max(h1_h[-8:])   # last 8 H1 candles = ~1 trading day
         today_low  = min(h1_l[-8:])
         daily_range_pip = (today_high - today_low) / 0.0001
-        CHAOS_THRESHOLD = 150.0
+        CHAOS_THRESHOLD = 200.0  # raised 150→200: EUR/USD May 2026 trending 100-200p/day
         if daily_range_pip > CHAOS_THRESHOLD:
             msg = ("🚫 CHAOS FILTER: daily range=" + str(round(daily_range_pip, 0)) +
                    "p > " + str(CHAOS_THRESHOLD) + "p — news-driven day, skipping")

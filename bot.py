@@ -425,7 +425,9 @@ def run_bot(state):
                 state.pop("pause_until", None)
                 log.info("Circuit breaker expired — resuming")
         except Exception:
+            # Stale/corrupt pause_until — clear it and continue
             state.pop("pause_until", None)
+            log.info("Circuit breaker cleared (stale) — resuming")
 
     # ── FRIDAY CUTOFF — no new trades after 23:00 SGT Friday ────────
     # Keep existing trades open (SL/TP/timeout handles them)
@@ -438,7 +440,9 @@ def run_bot(state):
     # ── WIN-STOP: 1 WIN PER DAY — after first win, stop trading ────────
     # Goal: 1 clean winning trade per day, then protect the profit.
     # If today already has a win, skip all new entries.
-    if state.get("wins", 0) >= 1:
+    # WIN-STOP: only count wins from today (prevents stale state bug)
+    wins_today = state.get("wins", 0) if state.get("date") == today else 0
+    if wins_today >= 1:
         log.info("✅ WIN-STOP: Already won today — no more trades. Protecting profit.")
         return
 
