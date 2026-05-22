@@ -93,8 +93,8 @@ def check_session_open_alerts(alert):
     today = now.strftime("%Y%m%d")
 
     windows = [
-        {"start": 15, "label": "London", "desc": "15:00–19:00 SGT"},
-        {"start": 20, "label": "NY",     "desc": "20:00–00:00 SGT"},
+        {"start":  7, "label": "London", "desc": "07:00–15:00 SGT"},
+        {"start": 15, "label": "NY",     "desc": "15:00–23:00 SGT"},
     ]
 
     for w in windows:
