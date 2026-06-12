@@ -3,8 +3,8 @@ OANDA — EUR/USD London + NY Scalp Bot
 ======================================
 Pair:    EUR/USD only
 Size:    50,000 units
-SL:      15 pips  = SGD 101.25
-TP:      25 pips  = SGD 168.75  [R:R 1.67]
+SL:      12 pips  = SGD 81.00
+TP:      20 pips  = SGD 135.00  [R:R 1.67]
 Max dur: 45 minutes
 Account: SGD
 
@@ -47,12 +47,14 @@ MAX_DURATION = 45
 # London/NY move 18-22 pips — 20p TP achievable.
 # TARGET: 1 WIN per day then stop. After win = done for the day.
 SESSION_TP_SL = {
-    "London": {"tp": 25, "sl": 15},  # +SGD 125 / -SGD 75
-    "NY":     {"tp": 25, "sl": 15},  # +SGD 125 / -SGD 75
+    "London": {"tp": 20, "sl": 12},  # +SGD 135 / -SGD 81  R:R 1.67
+    "NY":     {"tp": 20, "sl": 12},  # +SGD 135 / -SGD 81  R:R 1.67
 }
 # Fallback
-SL_PIPS = 15
-TP_PIPS = 25
+SL_PIPS = 12
+TP_PIPS = 20
+# NOTE: Reduced from 25/15 — analysis shows 25p TP rarely hit in ranging
+# markets (7/8 losses held 169-514 min). 20p TP more achievable in 45min.
 
 # Account is natively SGD — no conversion needed.
 # P&L from OANDA API (realizedPL / unrealizedPL) is also in account currency (SGD).
@@ -250,6 +252,11 @@ def detect_sl_tp_hits(state, trader, alert):
                 else:
                     state["wins"]          = wins + 1
                     state["consec_losses"] = 0
+                    # Record SGT date of win for win-stop
+                    from datetime import datetime
+                    import pytz as _pytz
+                    state["wins_sgt_date"] = datetime.now(
+                        _pytz.timezone("Asia/Singapore")).strftime("%Y%m%d")
                     alert.send_tp_hit(pnl_usd, pnl_sgd, balance_sgd,
                                       state["wins"], state["losses"],
                                       open_price, close_price)
@@ -406,12 +413,10 @@ def run_bot(state):
                 pnl_sgd = usd_to_sgd(pnl_usd)
                 result  = trader.close_position(name)
 
-                # ALWAYS clear open_times after timeout attempt — never retry
-                # OANDA SL/TP orders handle actual close even if this fails
-                state.get("open_times", {}).pop(name, None)
-                log.info(name + ": timeout close attempted — open_times cleared (no retry)")
-
                 if result.get("success"):
+                    # Successfully closed — clear state and alert
+                    state.get("open_times", {}).pop(name, None)
+                    log.info(name + ": timeout close SUCCESS — open_times cleared")
                     alert.send_timeout_close(
                         minutes=mins,
                         pnl_usd=pnl_usd,
@@ -419,12 +424,15 @@ def run_bot(state):
                         balance_sgd=current_balance_sgd,
                     )
                 else:
-                    log.warning(name + ": timeout close API failed (OANDA SL/TP still active) — " +
+                    # Close FAILED — keep open_times so we retry next scan
+                    # Do NOT clear open_times — this was causing trades to stay
+                    # open for hours (169-514 min seen in production losses)
+                    log.warning(name + ": timeout close FAILED — will retry next scan | " +
                                 str(result.get("error", "")))
         except Exception as e:
-            # On any error — clear open_times to prevent infinite retry loop
-            state.get("open_times", {}).pop(name, None)
-            log.warning("Duration check " + name + ": " + str(e) + " — open_times cleared")
+            # Keep open_times on error — retry next scan
+            # (Clearing was causing trades to never be closed = 500min holds)
+            log.warning("Duration check " + name + ": " + str(e) + " — will retry")
 
     # ── CIRCUIT BREAKER CHECK ────────────────────────────────────────
     pause_until = state.get("pause_until")
@@ -455,10 +463,11 @@ def run_bot(state):
     # ── WIN-STOP: 1 WIN PER DAY — after first win, stop trading ────────
     # Goal: 1 clean winning trade per day, then protect the profit.
     # If today already has a win, skip all new entries.
-    # WIN-STOP: only count wins from today (prevents stale state bug)
-    wins_today = state.get("wins", 0) if state.get("date") == today else 0
-    if wins_today >= 1:
-        log.info("✅ WIN-STOP: Already won today — no more trades. Protecting profit.")
+    # WIN-STOP: track wins by SGT date separately to prevent stale state
+    # Use 'wins_date' key so it's independent of state['date'] (UTC-based)
+    wins_sgt_date = state.get("wins_sgt_date", "")
+    if wins_sgt_date == today and state.get("wins", 0) >= 1:
+        log.info("✅ WIN-STOP: Already won today (" + today + ") — protecting profit.")
         return
 
     # ── SCAN + TRADE ───────────────────────────────────────────────────
