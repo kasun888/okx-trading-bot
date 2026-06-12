@@ -146,13 +146,35 @@ class SignalEngine:
 
         if h4_price > h4_ema50:
             direction = "BUY"
-            reasons.append("✅ L0 H4 BUY above EMA50=" + str(round(h4_ema50, 5)))
         elif h4_price < h4_ema50:
             direction = "SELL"
-            reasons.append("✅ L0 H4 SELL below EMA50=" + str(round(h4_ema50, 5)))
         else:
             log.info(instrument + ": L0 FAIL — H4 EMA50 flat")
             return 0, "NONE", "H4 EMA50 flat — no macro trend"
+
+        # ── H4 SLOPE CHECK: EMA50 must be moving in trade direction ──
+        # Filters out flat/ranging H4 trend (main cause of losses)
+        # EMA50 now vs 3 bars ago — must be rising for BUY, falling for SELL
+        h4_ema50_series = self._ema(h4_c, 50)
+        h4_ema50_prev   = h4_ema50_series[-4]  # 3 bars ago
+        h4_slope        = h4_ema50 - h4_ema50_prev
+        MIN_SLOPE       = 0.00003  # ~0.3 pip minimum slope
+
+        if direction == "BUY" and h4_slope < MIN_SLOPE:
+            msg = ("L0 FAIL — H4 EMA50 slope flat/falling: " +
+                   str(round(h4_slope/0.0001, 2)) + "p/bar (need +" +
+                   str(round(MIN_SLOPE/0.0001,2)) + "p)")
+            log.info(instrument + ": " + msg)
+            return 0, "NONE", msg
+        if direction == "SELL" and h4_slope > -MIN_SLOPE:
+            msg = ("L0 FAIL — H4 EMA50 slope flat/rising: " +
+                   str(round(h4_slope/0.0001, 2)) + "p/bar (need -" +
+                   str(round(MIN_SLOPE/0.0001,2)) + "p)")
+            log.info(instrument + ": " + msg)
+            return 0, "NONE", msg
+
+        reasons.append("✅ L0 H4 " + direction + " EMA50=" + str(round(h4_ema50, 5)) +
+                       " slope=" + str(round(h4_slope/0.0001, 2)) + "p/bar")
 
         score = 1
 
